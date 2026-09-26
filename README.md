@@ -1,6 +1,7 @@
 # sumo-rs
 
 [![CI](https://github.com/bhubbard/sumo-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/bhubbard/sumo-rs/actions)
+[![Website](https://img.shields.io/badge/website-GitHub%20Pages-10B981?style=flat&logo=github)](https://bhubbard.github.io/sumo-rs/)
 [![Crates.io](https://img.shields.io/badge/crates.io-v0.1.0-orange.svg)](https://crates.io/crates/sumo-rs)
 [![Documentation](https://docs.rs/sumo-rs/badge.svg)](https://docs.rs/sumo-rs)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)

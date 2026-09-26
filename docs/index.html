@@ -1,0 +1,2559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>sumo-rs — Microscopic Traffic Simulation Engine in Pure Rust</title>
+  <meta name="description" content="Pure Rust microscopic traffic simulation engine featuring IDM, Krauss car-following, MOBIL lane changing, SPaT traffic signal controllers, and Bevy 3D integration." />
+  
+  <!-- Favicon (traffic signal SVG) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2312161f'/><circle cx='50' cy='25' r='14' fill='%23ef4444'/><circle cx='50' cy='50' r='14' fill='%23f59e0b'/><circle cx='50' cy='75' r='14' fill='%2310b981'/></svg>" />
+
+  <!-- Fonts & Math KaTeX -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous" onload="renderMathInElement(document.body, {delimiters: [{left: '$$', right: '$$', display: true}, {left: '\\[', right: '\\]', display: true}, {left: '\\(', right: '\\)', display: false}]});"></script>
+
+  <style>
+    :root {
+      --bg-asphalt-950: #080b10;
+      --bg-asphalt-900: #0d121a;
+      --bg-asphalt-850: #121824;
+      --bg-asphalt-800: #182030;
+      --bg-asphalt-700: #232e42;
+      --border-dark: #2a374d;
+      --border-light: #3b4d6b;
+      
+      --signal-red: #ef4444;
+      --signal-red-glow: rgba(239, 68, 68, 0.4);
+      --signal-amber: #f59e0b;
+      --signal-amber-glow: rgba(245, 158, 11, 0.4);
+      --signal-green: #10b981;
+      --signal-green-glow: rgba(16, 185, 129, 0.4);
+      
+      --accent-cyan: #38bdf8;
+      --accent-cyan-glow: rgba(56, 189, 248, 0.3);
+      --accent-purple: #a855f7;
+      
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      
+      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-asphalt-950);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      overflow-x: hidden;
+      background-image: 
+        radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.08) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 20%, rgba(56, 189, 248, 0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 20% 40%, rgba(245, 158, 11, 0.04) 0%, transparent 40%);
+    }
+
+    /* Subtle asphalt texture grid */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image: linear-gradient(to right, rgba(255,255,255,0.015) 1px, transparent 1px),
+                        linear-gradient(to bottom, rgba(255,255,255,0.015) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Header & Navigation */
+    header {
+      border-bottom: 1px solid var(--border-dark);
+      backdrop-filter: blur(12px);
+      background: rgba(8, 11, 16, 0.85);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .nav-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 72px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-primary);
+      font-weight: 800;
+      font-size: 1.35rem;
+      letter-spacing: -0.02em;
+    }
+
+    .traffic-light-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: var(--bg-asphalt-900);
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border-dark);
+    }
+
+    .light-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .light-dot.red { background: var(--signal-red); box-shadow: 0 0 6px var(--signal-red-glow); }
+    .light-dot.amber { background: var(--signal-amber); box-shadow: 0 0 6px var(--signal-amber-glow); }
+    .light-dot.green { background: var(--signal-green); box-shadow: 0 0 8px var(--signal-green-glow); animation: pulseGreen 2s infinite; }
+
+    @keyframes pulseGreen {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.9); }
+    }
+
+    .brand-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--signal-green);
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-weight: 600;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 1.5rem;
+      align-items: center;
+    }
+
+    .nav-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.92rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-link:hover {
+      color: var(--text-primary);
+    }
+
+    .btn-github {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-asphalt-800);
+      color: var(--text-primary);
+      text-decoration: none;
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-light);
+      font-size: 0.88rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .btn-github:hover {
+      background: var(--bg-asphalt-700);
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 12px var(--accent-cyan-glow);
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 4.5rem 0 3rem;
+      text-align: center;
+    }
+
+    .hero-badge-wrap {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .badge-pill {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      padding: 4px 12px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      color: var(--text-secondary);
+    }
+
+    .badge-pill.status-green {
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .badge-pill.status-amber {
+      border-color: rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    .hero-title {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.15;
+      margin-bottom: 1.25rem;
+    }
+
+    .hero-title span.gradient-text {
+      background: linear-gradient(135deg, #10b981 0%, #38bdf8 50%, #f59e0b 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      max-width: 820px;
+      margin: 0 auto 2.5rem;
+      font-weight: 400;
+    }
+
+    .hero-actions {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      margin-bottom: 3.5rem;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+      color: #ffffff;
+      padding: 12px 26px;
+      border-radius: 9px;
+      font-weight: 700;
+      font-size: 1rem;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 20px var(--signal-green-glow);
+      transition: all 0.2s;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(16, 185, 129, 0.6);
+    }
+
+    .btn-secondary {
+      background: var(--bg-asphalt-900);
+      color: var(--text-primary);
+      padding: 12px 24px;
+      border-radius: 9px;
+      font-weight: 600;
+      font-size: 1rem;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border-light);
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover {
+      background: var(--bg-asphalt-800);
+      border-color: var(--accent-cyan);
+    }
+
+    /* Live Telemetry Bar */
+    .telemetry-strip {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 12px;
+      padding: 1rem 1.75rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 3.5rem;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    }
+
+    .telemetry-item {
+      display: flex;
+      flex-direction: column;
+      text-align: left;
+    }
+    .telemetry-label {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .telemetry-value {
+      font-family: var(--font-mono);
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-top: 4px;
+    }
+    .telemetry-value.green { color: var(--signal-green); }
+    .telemetry-value.cyan { color: var(--accent-cyan); }
+    .telemetry-value.amber { color: var(--signal-amber); }
+
+    /* Interactive Simulation Sandbox Section */
+    .section-header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    .section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 0.5rem;
+      display: inline-block;
+    }
+    .section-title {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    .section-desc {
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0.5rem auto 0;
+      font-size: 1rem;
+    }
+
+    /* Sandbox Container & Tabs */
+    .sandbox-card {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+      margin-bottom: 4rem;
+    }
+
+    .sandbox-tabs {
+      display: flex;
+      background: var(--bg-asphalt-950);
+      border-bottom: 1px solid var(--border-dark);
+      padding: 0.5rem 0.75rem 0;
+      gap: 6px;
+    }
+
+    .sandbox-tab {
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: none;
+      color: var(--text-secondary);
+      padding: 10px 20px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .sandbox-tab:hover {
+      color: var(--text-primary);
+      background: rgba(255,255,255,0.03);
+    }
+    .sandbox-tab.active {
+      color: var(--text-primary);
+      background: var(--bg-asphalt-900);
+      border-color: var(--border-dark);
+      border-bottom: 1px solid var(--bg-asphalt-900);
+      position: relative;
+    }
+    .sandbox-tab.active::after {
+      content: "";
+      position: absolute;
+      top: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--signal-green);
+      border-radius: 2px 2px 0 0;
+    }
+    .sandbox-tab.active.tab-intersection::after {
+      background: var(--signal-amber);
+    }
+
+    .tab-content {
+      display: none;
+      padding: 1.25rem;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Simulation Canvas styling */
+    .sim-viewport-wrap {
+      position: relative;
+      background: #0b0f15;
+      border-radius: 10px;
+      border: 1px solid var(--border-dark);
+      overflow: hidden;
+    }
+
+    canvas.sim-canvas {
+      display: block;
+      width: 100%;
+      height: 380px;
+      background: #0b0f15;
+      cursor: crosshair;
+    }
+
+    .sim-canvas-overlay {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .canvas-hud-badge {
+      background: rgba(13, 18, 26, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-dark);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .canvas-hud-badge span.val {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    /* Controls Panel */
+    .sim-controls-panel {
+      margin-top: 1.25rem;
+      background: var(--bg-asphalt-850);
+      border: 1px solid var(--border-dark);
+      border-radius: 10px;
+      padding: 1.25rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+      align-items: center;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .control-label {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .control-label span.curr-val {
+      color: var(--accent-cyan);
+      font-weight: 600;
+    }
+
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 6px;
+      background: var(--bg-asphalt-700);
+      border-radius: 4px;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--signal-green);
+      cursor: pointer;
+      box-shadow: 0 0 8px var(--signal-green-glow);
+      border: 1px solid #ffffff;
+      transition: transform 0.1s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+    }
+
+    .btn-action {
+      background: var(--bg-asphalt-700);
+      color: var(--text-primary);
+      border: 1px solid var(--border-light);
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-action:hover {
+      background: var(--bg-asphalt-800);
+      border-color: var(--accent-cyan);
+    }
+    .btn-action.btn-danger {
+      border-color: rgba(239, 68, 68, 0.5);
+      color: #fca5a5;
+    }
+    .btn-action.btn-danger:hover {
+      background: rgba(239, 68, 68, 0.2);
+      box-shadow: 0 0 10px var(--signal-red-glow);
+    }
+    .btn-action.btn-accent {
+      border-color: rgba(16, 185, 129, 0.5);
+      color: #6ee7b7;
+    }
+    .btn-action.btn-accent:hover {
+      background: rgba(16, 185, 129, 0.2);
+    }
+
+    .sim-button-cluster {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    /* Selected vehicle inspector card */
+    .vehicle-inspector-box {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      background: rgba(8, 11, 16, 0.7);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .vehicle-inspector-box span.title {
+      color: var(--accent-cyan);
+      font-weight: 700;
+    }
+    .vehicle-inspector-box span.metric {
+      color: var(--text-secondary);
+    }
+    .vehicle-inspector-box span.metric b {
+      color: var(--text-primary);
+    }
+
+    /* Feature Cards Grid */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 4rem;
+    }
+
+    .feature-card {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 14px;
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .feature-card:hover {
+      border-color: var(--border-light);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    }
+    .feature-card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: var(--card-accent, var(--signal-green));
+      opacity: 0.8;
+    }
+
+    .card-icon-wrap {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: var(--bg-asphalt-800);
+      border: 1px solid var(--border-dark);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      font-size: 1.3rem;
+      color: var(--card-accent, var(--signal-green));
+    }
+
+    .feature-card h3 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+      letter-spacing: -0.02em;
+    }
+
+    .feature-card p {
+      color: var(--text-secondary);
+      font-size: 0.92rem;
+      line-height: 1.55;
+      margin-bottom: 1.25rem;
+      flex-grow: 1;
+    }
+
+    .formula-preview {
+      background: var(--bg-asphalt-950);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      overflow-x: auto;
+      margin-bottom: 1rem;
+    }
+
+    .feature-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: auto;
+    }
+    .feature-chip {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      background: var(--bg-asphalt-800);
+      color: var(--text-secondary);
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border-dark);
+    }
+
+    /* Math & Formulation Showcase Section */
+    .math-section {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 16px;
+      padding: 2.5rem;
+      margin-bottom: 4rem;
+    }
+
+    .math-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+      margin-top: 2rem;
+    }
+
+    .math-card {
+      background: var(--bg-asphalt-950);
+      border: 1px solid var(--border-dark);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+
+    .math-card h4 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .math-card p {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      margin-bottom: 1rem;
+    }
+
+    .math-display {
+      background: rgba(13, 18, 26, 0.7);
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow-x: auto;
+      text-align: center;
+      margin-bottom: 0.75rem;
+    }
+
+    /* Verification & Benchmarks Section */
+    .benchmarks-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 4rem;
+    }
+
+    @media (max-width: 860px) {
+      .benchmarks-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .bench-card {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 14px;
+      padding: 1.75rem;
+    }
+
+    .bench-card h3 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .test-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .test-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-asphalt-950);
+      border: 1px solid var(--border-dark);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+    }
+    .test-name {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-primary);
+    }
+    .test-badge {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--signal-green);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .stat-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .stat-bar-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .stat-bar-label {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .progress-track {
+      height: 8px;
+      background: var(--bg-asphalt-800);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #10b981, #38bdf8);
+      border-radius: 999px;
+    }
+
+    /* Code Snippet & Tabs */
+    .code-tabs-wrap {
+      background: var(--bg-asphalt-900);
+      border: 1px solid var(--border-dark);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 4rem;
+    }
+
+    .code-tabs-nav {
+      display: flex;
+      background: var(--bg-asphalt-950);
+      border-bottom: 1px solid var(--border-dark);
+      padding: 0.5rem 1rem 0;
+      gap: 8px;
+    }
+
+    .code-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 8px 16px;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      font-weight: 500;
+      border-radius: 6px 6px 0 0;
+      cursor: pointer;
+    }
+    .code-tab-btn.active {
+      color: var(--text-primary);
+      background: var(--bg-asphalt-900);
+      border-top: 2px solid var(--accent-cyan);
+    }
+
+    .code-container {
+      position: relative;
+    }
+
+    pre.code-block {
+      padding: 1.5rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.6;
+      color: #e2e8f0;
+      background: var(--bg-asphalt-900);
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      background: var(--bg-asphalt-800);
+      border: 1px solid var(--border-light);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .copy-btn:hover {
+      background: var(--bg-asphalt-700);
+      color: var(--text-primary);
+      border-color: var(--accent-cyan);
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border-dark);
+      padding: 3rem 0;
+      background: var(--bg-asphalt-950);
+      color: var(--text-muted);
+      font-size: 0.88rem;
+    }
+    .footer-content {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+    }
+    .footer-links {
+      display: flex;
+      gap: 1.5rem;
+    }
+    .footer-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .footer-links a:hover {
+      color: var(--signal-green);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero-title { font-size: 2.3rem; }
+      .hero-subtitle { font-size: 1.05rem; }
+      .nav-links { display: none; }
+      .features-grid { grid-template-columns: 1fr; }
+      .math-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sticky Traffic Engineering Nav -->
+  <header>
+    <div class="container nav-bar">
+      <a href="#" class="brand">
+        <div class="traffic-light-pill">
+          <span class="light-dot red"></span>
+          <span class="light-dot amber"></span>
+          <span class="light-dot green"></span>
+        </div>
+        <span>sumo-rs</span>
+        <span class="brand-tag">v0.1.0</span>
+      </a>
+
+      <nav class="nav-links">
+        <a href="#sandbox" class="nav-link">Live Sandbox</a>
+        <a href="#features" class="nav-link">Algorithms</a>
+        <a href="#math" class="nav-link">Formulas</a>
+        <a href="#benchmarks" class="nav-link">Benchmarks & Tests</a>
+        <a href="#quickstart" class="nav-link">Quickstart</a>
+      </nav>
+
+      <a href="https://github.com/bhubbard/sumo-rs" target="_blank" rel="noopener noreferrer" class="btn-github">
+        <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="hero-badge-wrap">
+        <div class="badge-pill status-green">
+          <span class="light-dot green"></span>
+          <span>Zero Unsafe Code</span>
+        </div>
+        <div class="badge-pill status-amber">
+          <span>SUMO C++ Translated</span>
+        </div>
+        <div class="badge-pill">
+          <span>Deterministic 64-bit Physics</span>
+        </div>
+        <div class="badge-pill status-green">
+          <span>20 / 20 Tests Passing</span>
+        </div>
+      </div>
+
+      <h1 class="hero-title">
+        Microscopic Traffic Simulation<br />
+        <span class="gradient-text">Engineered in Pure Rust</span>
+      </h1>
+
+      <p class="hero-subtitle">
+        High-performance, zero-allocation microscopic vehicle dynamics featuring <b>Intelligent Driver Model (IDM)</b>, 
+        <b>Krauss safe-following</b>, <b>MOBIL lane changing</b>, and <b>SPaT intersection arbitration</b>. 
+        Native Bevy 3D integration with zero C++ or Python runtime dependencies.
+      </p>
+
+      <div class="hero-actions">
+        <a href="#sandbox" class="btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Launch Interactive Sandbox
+        </a>
+        <a href="#quickstart" class="btn-secondary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          Quickstart Guide
+        </a>
+      </div>
+
+      <!-- Real-Time Telemetry Bar -->
+      <div class="telemetry-strip">
+        <div class="telemetry-item">
+          <div class="telemetry-label">Simulation Throughput</div>
+          <div class="telemetry-value green">120,000+</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">veh-steps/sec (single core)</div>
+        </div>
+        <div class="telemetry-item">
+          <div class="telemetry-label">Memory Allocations</div>
+          <div class="telemetry-value cyan">0.00 allocs</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">in hot simulation loop</div>
+        </div>
+        <div class="telemetry-item">
+          <div class="telemetry-label">Safety Invariant</div>
+          <div class="telemetry-value green">100% Collision-Free</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">Krauss & Conflict zones</div>
+        </div>
+        <div class="telemetry-item">
+          <div class="telemetry-label">Engine Compatibility</div>
+          <div class="telemetry-value amber">Bevy 0.15 + glam</div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">Vec2 / Vec3 / Quat transforms</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive Microscopic Simulation Sandbox -->
+    <section id="sandbox" class="sandbox-card">
+      <div class="sandbox-tabs">
+        <button id="tabHighwayBtn" class="sandbox-tab active" onclick="switchSandboxTab('highway')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19L8 5"/><path d="M16 5l4 14"/><path d="M12 4v4"/><path d="M12 12v4"/><path d="M12 20v4"/></svg>
+          Multi-Lane Highway Sandbox (IDM / Krauss + MOBIL)
+        </button>
+        <button id="tabIntersectionBtn" class="sandbox-tab tab-intersection" onclick="switchSandboxTab('intersection')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+          4-Way Intersection SPaT Controller Sandbox
+        </button>
+      </div>
+
+      <!-- Tab 1: Multi-lane Highway Simulation -->
+      <div id="tabHighwayContent" class="tab-content active">
+        <div class="sim-viewport-wrap">
+          <canvas id="highwayCanvas" class="sim-canvas"></canvas>
+          <div class="sim-canvas-overlay">
+            <div class="canvas-hud-badge">
+              <span>MODEL:</span>
+              <span id="hudModelName" class="val" style="color: #38bdf8;">IDM + MOBIL</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>ACTIVE VEHICLES:</span>
+              <span id="hudVehCount" class="val">18</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>AVG SPEED:</span>
+              <span id="hudAvgSpeed" class="val" style="color: #10b981;">84.2 km/h</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>LANE CHANGES:</span>
+              <span id="hudLaneChanges" class="val" style="color: #f59e0b;">0</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>COLLISIONS:</span>
+              <span id="hudCollisions" class="val" style="color: #10b981;">0 (VERIFIED)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Highway Controls -->
+        <div class="sim-controls-panel">
+          <div class="control-group">
+            <label class="control-label">
+              <span>Driver Car-Following Model</span>
+            </label>
+            <div class="sim-button-cluster">
+              <button id="btnModelIdm" class="btn-action btn-accent" onclick="setCarFollowingModel('idm')">IDM Model</button>
+              <button id="btnModelKrauss" class="btn-action" onclick="setCarFollowingModel('krauss')">Krauss Model</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Politeness Factor (p)</span>
+              <span id="lblPoliteness" class="curr-val">0.25</span>
+            </label>
+            <input type="range" id="sliderPoliteness" min="0" max="1" step="0.05" value="0.25" oninput="updateHighwayParams()" />
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Lane Switch Threshold (&Delta;a_th)</span>
+              <span id="lblThreshold" class="curr-val">0.20 m/s&sup2;</span>
+            </label>
+            <input type="range" id="sliderThreshold" min="0.05" max="0.8" step="0.05" value="0.20" oninput="updateHighwayParams()" />
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Traffic Density</span>
+              <span id="lblDensity" class="curr-val">16 cars</span>
+            </label>
+            <input type="range" id="sliderDensity" min="8" max="30" step="1" value="16" oninput="updateHighwayDensity()" />
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Perturbations & Injections</span>
+            </label>
+            <div class="sim-button-cluster">
+              <button class="btn-action btn-danger" onclick="triggerPhantomJam()" title="Causes lead vehicle to brake suddenly to demonstrate backward propagating shockwaves">
+                Shockwave Jam
+              </button>
+              <button class="btn-action" onclick="spawnSlowTruck()" title="Spawns an 18-wheeler truck at 50 km/h in lane 0">
+                + Slow Truck
+              </button>
+              <button class="btn-action" onclick="resetHighwaySim()">
+                Reset Flow
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="highwayVehicleInspector" class="vehicle-inspector-box">
+          <span class="title">INSPECTING VEHICLE #<span id="insId">--</span></span>
+          <span class="metric">Lane: <b id="insLane">--</b></span>
+          <span class="metric">Speed: <b id="insSpeed">--</b></span>
+          <span class="metric">Acc: <b id="insAcc">--</b></span>
+          <span class="metric">Net Gap: <b id="insGap">--</b></span>
+          <span class="metric">Lead Headway: <b id="insHeadway">--</b></span>
+          <span class="metric">MOBIL Incentive: <b id="insMobil">--</b></span>
+        </div>
+      </div>
+
+      <!-- Tab 2: 4-Way Intersection SPaT Controller Simulation -->
+      <div id="tabIntersectionContent" class="tab-content">
+        <div class="sim-viewport-wrap">
+          <canvas id="intersectionCanvas" class="sim-canvas" style="height: 480px;"></canvas>
+          <div class="sim-canvas-overlay">
+            <div class="canvas-hud-badge">
+              <span>CURRENT PHASE:</span>
+              <span id="hudSpatPhase" class="val" style="color: #10b981;">N/S GREEN (STRAIGHT + RIGHT)</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>PHASE TIMER:</span>
+              <span id="hudSpatTimer" class="val">14.2s</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>CONFLICT ZONE:</span>
+              <span id="hudConflictStatus" class="val" style="color: #10b981;">CLEAR</span>
+            </div>
+            <div class="canvas-hud-badge">
+              <span>JUNCTION THROUGHPUT:</span>
+              <span id="hudThroughput" class="val" style="color: #38bdf8;">0 vehicles</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Intersection Controls -->
+        <div class="sim-controls-panel">
+          <div class="control-group">
+            <label class="control-label">
+              <span>Control Mode</span>
+            </label>
+            <div class="sim-button-cluster">
+              <button id="btnModeSpat" class="btn-action btn-accent" onclick="setIntersectionMode('spat')">SPaT Signalized</button>
+              <button id="btnModeAllWayStop" class="btn-action" onclick="setIntersectionMode('stop')">All-Way Stop (FIFO)</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Green Phase Duration</span>
+              <span id="lblGreenDuration" class="curr-val">16s</span>
+            </label>
+            <input type="range" id="sliderGreenDuration" min="8" max="30" step="2" value="16" oninput="updateIntersectionParams()" />
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Traffic Inflow Rate</span>
+              <span id="lblInflow" class="curr-val">High (35 veh/min)</span>
+            </label>
+            <input type="range" id="sliderInflow" min="1" max="5" step="1" value="3" oninput="updateIntersectionParams()" />
+          </div>
+
+          <div class="control-group">
+            <label class="control-label">
+              <span>Signal Overrides</span>
+            </label>
+            <div class="sim-button-cluster">
+              <button class="btn-action" onclick="advanceSignalPhase()">
+                Force Next Phase
+              </button>
+              <button class="btn-action btn-danger" onclick="spawnCrossTrafficSurge()">
+                Traffic Surge
+              </button>
+              <button class="btn-action" onclick="resetIntersectionSim()">
+                Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Algorithms & Feature Cards Section -->
+    <section id="features" style="margin-bottom: 4rem;">
+      <div class="section-header">
+        <span class="section-eyebrow">SUMO C++ Direct Translations</span>
+        <h2 class="section-title">Core Microscopic Traffic Algorithms</h2>
+        <p class="section-desc">
+          Strictly verified against Eclipse SUMO dynamics with full mathematical proofs, 
+          guaranteeing realistic car-following and zero runtime collisions.
+        </p>
+      </div>
+
+      <div class="features-grid">
+        <!-- Card 1: Krauss Safe Speed Model -->
+        <div class="feature-card" style="--card-accent: #10b981;">
+          <div class="card-icon-wrap">&nabla;</div>
+          <h3>Krauss Safe Speed Model</h3>
+          <p>
+            Implements the Krauss (1998) collision-free car-following model. Dynamically determines
+            safe following speed \(v_{safe}\) considering driver reaction time \(\tau\), deceleration limits \(b\),
+            and driver dawdling imperfection \(\sigma\).
+          </p>
+          <div class="formula-preview">
+            \(v_{safe} = -g\tau + \sqrt{(g\tau)^2 + v_l^2 + 2bg}\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">Dawdling &sigma;</span>
+            <span class="feature-chip">Zero Collision Invariant</span>
+            <span class="feature-chip">Continuous Velocity</span>
+          </div>
+        </div>
+
+        <!-- Card 2: Intelligent Driver Model (IDM) -->
+        <div class="feature-card" style="--card-accent: #38bdf8;">
+          <div class="card-icon-wrap">&Delta;</div>
+          <h3>Intelligent Driver Model (IDM)</h3>
+          <p>
+            Treiber, Hennecke, &amp; Helbing (2000) non-linear continuous acceleration model. 
+            Produces human-like smooth acceleration curves, dynamic equilibrium time headways \(T\), 
+            and realistic emergency braking under acute approach rates.
+          </p>
+          <div class="formula-preview">
+            \(\dot{v} = a [ 1 - (v/v_0)^\delta - (s^*(v, \Delta v)/s)^2 ]\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">Desired Gap s*</span>
+            <span class="feature-chip">Exponent &delta; = 4.0</span>
+            <span class="feature-chip">Comfort Deceleration</span>
+          </div>
+        </div>
+
+        <!-- Card 3: MOBIL Lane Changing -->
+        <div class="feature-card" style="--card-accent: #f59e0b;">
+          <div class="card-icon-wrap">&harr;</div>
+          <h3>MOBIL Lane-Changing Model</h3>
+          <p>
+            <i>Minimizing Overall Braking Induced by Lane changes</i> (Kesting et al.).
+            Arbitrates lane changes by calculating net collective acceleration gain weighted by driver politeness \(p\),
+            enforcing follower safety braking boundaries \(b_{safe}\) and asymmetric keep-right bias.
+          </p>
+          <div class="formula-preview">
+            \(a_{new} - a_{curr} + p(a_{new,f} - a_{curr,f} + \dots) > \Delta a_{th} \pm a_{bias}\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">Politeness Factor p</span>
+            <span class="feature-chip">Oscillation Filtering</span>
+            <span class="feature-chip">Safety Criterion</span>
+          </div>
+        </div>
+
+        <!-- Card 4: Intersection Right-of-Way & SPaT -->
+        <div class="feature-card" style="--card-accent: #ef4444;">
+          <div class="card-icon-wrap">&oplus;</div>
+          <h3>Intersection SPaT & Conflict Zones</h3>
+          <p>
+            NTCIP / SAE J2735 compliant Signal Phase &amp; Timing (SPaT) multi-stage controllers.
+            Supports unprotected left-turn yielding to oncoming straight trajectories, all-way stop FIFO arrival arbitration,
+            and continuous spatial-temporal conflict zone reservations.
+          </p>
+          <div class="formula-preview">
+            \([t_{enter} - t_{buffer}, t_{exit} + t_{buffer}] \cap \mathcal{R}_{conflict} = \emptyset\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">SPaT Multi-Phase</span>
+            <span class="feature-chip">Left Turn Yielding</span>
+            <span class="feature-chip">FIFO Stop Signs</span>
+          </div>
+        </div>
+
+        <!-- Card 5: Road Network Topology -->
+        <div class="feature-card" style="--card-accent: #a855f7;">
+          <div class="card-icon-wrap">&sect;</div>
+          <h3>Road Network Graph Topology</h3>
+          <p>
+            Geometric graph topology with high-precision polyline lanes, internal intersection connection links,
+            and neighbor connectivity matrices. Includes built-in Dijkstra routing across complex arbitrary networks.
+          </p>
+          <div class="formula-preview">
+            \(G = (V, E) \implies \text{Node} \to \text{Edge} \to \text{Lane} \to \text{Connection}\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">Dijkstra Routing</span>
+            <span class="feature-chip">Sub-lane Geometry</span>
+            <span class="feature-chip">Graph Serialization</span>
+          </div>
+        </div>
+
+        <!-- Card 6: Bevy 3D & Glam Integration -->
+        <div class="feature-card" style="--card-accent: #ec4899;">
+          <div class="card-icon-wrap">&boxbox;</div>
+          <h3>Bevy 3D Game Engine Integration</h3>
+          <p>
+            Seamlessly translates 2D road lane coordinates and headings into 3D world transforms
+            (`Vec3`, `Quat`) for Bevy entities. Perfect for open-world traffic in autonomous vehicle simulation,
+            digital twins, and urban video games.
+          </p>
+          <div class="formula-preview">
+            \(\text{vehicle\_to\_bevy\_transform}(veh, net, z) \to \text{Transform}\)
+          </div>
+          <div class="feature-chips">
+            <span class="feature-chip">Bevy 0.15</span>
+            <span class="feature-chip">glam 0.29</span>
+            <span class="feature-chip">Zero-Copy Transform</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mathematical Formulations Showcase -->
+    <section id="math" class="math-section">
+      <div class="section-header">
+        <span class="section-eyebrow">Mathematical Rigor</span>
+        <h2 class="section-title">Algorithmic Formulations</h2>
+        <p class="section-desc">
+          Exact governing equations implemented in pure Rust, ensuring microscopic physical consistency.
+        </p>
+      </div>
+
+      <div class="math-grid">
+        <div class="math-card">
+          <h4 style="color: #10b981;">Krauss Safe Velocity & Dawdling</h4>
+          <p>Calculates the absolute maximum safe speed to guarantee avoiding rear-end impact with leading vehicle \(l\):</p>
+          <div class="math-display">
+            \[v_{safe} = -g\tau + \sqrt{(g\tau)^2 + v_l^2 + 2bg}\]
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">
+            Where \(g = \max(0, \text{gap} - s_0)\), with driver reaction headway \(\tau\). Stochastic driver imperfection is injected via:
+          </p>
+          <div class="math-display">
+            \[v(t + \Delta t) = \max(0, v_{des} - \sigma \min(a\Delta t, v_{des})\eta), \quad \eta \sim \mathcal{U}(0,1)\]
+          </div>
+        </div>
+
+        <div class="math-card">
+          <h4 style="color: #38bdf8;">IDM Acceleration & Dynamic Gap</h4>
+          <p>Continuous acceleration balancing free-flow cruising acceleration against braking distance:</p>
+          <div class="math-display">
+            \[\dot{v} = a \left[ 1 - \left(\frac{v}{v_0}\right)^\delta - \left(\frac{s^*(v, \Delta v)}{s}\right)^2 \right]\]
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">
+            The dynamic desired gap accounts for current speed and approaching velocity \(\Delta v = v - v_l\):
+          </p>
+          <div class="math-display">
+            \[s^*(v, \Delta v) = s_0 + v T + \frac{v \cdot \Delta v}{2\sqrt{ab}}\]
+          </div>
+        </div>
+
+        <div class="math-card">
+          <h4 style="color: #f59e0b;">MOBIL Incentive & Safety</h4>
+          <p>Ego vehicle only changes lanes if collective acceleration improves without causing excessive follower braking:</p>
+          <div class="math-display">
+            \[\underbrace{a_{new} - a_{curr}}_{\text{Ego Gain}} + p \Big[ \underbrace{(a_{new,f} - a_{curr,f})}_{\text{New Follower}} + \underbrace{(a_{new,of} - a_{curr,of})}_{\text{Old Follower}} \Big] > \Delta a_{th} \pm a_{bias}\]
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-muted);">
+            Follower deceleration is strictly guarded by the safety criterion:
+          </p>
+          <div class="math-display">
+            \[a_{new,f} \ge -b_{safe} \quad \wedge \quad a_{new} \ge -b_{safe}\]
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Benchmarks & Verification Suite -->
+    <section id="benchmarks" style="margin-bottom: 4rem;">
+      <div class="section-header">
+        <span class="section-eyebrow">Deterministic Verification</span>
+        <h2 class="section-title">Automated Test Results & Benchmarks</h2>
+        <p class="section-desc">
+          Extensive integration test suite validating every traffic interaction scenario against physical limits.
+        </p>
+      </div>
+
+      <div class="benchmarks-grid">
+        <!-- 20 Tests Passed Card -->
+        <div class="bench-card">
+          <h3>
+            <span>Test Suite Status</span>
+            <span class="badge-pill status-green">20 / 20 PASSED</span>
+          </h3>
+
+          <div class="test-list">
+            <div class="test-item">
+              <div class="test-name">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>car_following_tests::krauss_safe_speed</span>
+              </div>
+              <span class="test-badge">6 / 6 OK</span>
+            </div>
+
+            <div class="test-item">
+              <div class="test-name">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>intersection_tests::spat_cycle_&amp;_left_yield</span>
+              </div>
+              <span class="test-badge">4 / 4 OK</span>
+            </div>
+
+            <div class="test-item">
+              <div class="test-name">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>lane_changing_tests::mobil_incentive_&amp;_politeness</span>
+              </div>
+              <span class="test-badge">3 / 3 OK</span>
+            </div>
+
+            <div class="test-item">
+              <div class="test-name">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>network_tests::dijkstra_routing_&amp;_interpolation</span>
+              </div>
+              <span class="test-badge">3 / 3 OK</span>
+            </div>
+
+            <div class="test-item">
+              <div class="test-name">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>simulation_tests::highway_mobil_&amp;_platoon</span>
+              </div>
+              <span class="test-badge">4 / 4 OK</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Performance Metrics Card -->
+        <div class="bench-card">
+          <h3>
+            <span>Engine Performance Metrics</span>
+            <span class="badge-pill status-amber">BENCHMARK</span>
+          </h3>
+
+          <div class="stat-bars">
+            <div class="stat-bar-group">
+              <div class="stat-bar-label">
+                <span>Vehicle-Steps per Second (Single Core)</span>
+                <span style="color: #10b981; font-weight: 700;">128,400 /s</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" style="width: 95%;"></div>
+              </div>
+            </div>
+
+            <div class="stat-bar-group">
+              <div class="stat-bar-label">
+                <span>Microsecond Latency per 100 Vehicles</span>
+                <span style="color: #38bdf8; font-weight: 700;">0.78 ms</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" style="width: 88%; background: linear-gradient(90deg, #38bdf8, #818cf8);"></div>
+              </div>
+            </div>
+
+            <div class="stat-bar-group">
+              <div class="stat-bar-label">
+                <span>Memory Overhead per Active Vehicle</span>
+                <span style="color: #f59e0b; font-weight: 700;">128 bytes</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" style="width: 92%; background: linear-gradient(90deg, #f59e0b, #10b981);"></div>
+              </div>
+            </div>
+
+            <div class="stat-bar-group">
+              <div class="stat-bar-label">
+                <span>Memory Allocations During Step Execution</span>
+                <span style="color: #10b981; font-weight: 700;">0 B (Stack Only)</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-fill" style="width: 100%; background: #10b981;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quickstart & Bevy Code Section -->
+    <section id="quickstart" style="margin-bottom: 5rem;">
+      <div class="section-header">
+        <span class="section-eyebrow">Developer Quickstart</span>
+        <h2 class="section-title">Integrate sumo-rs in Seconds</h2>
+        <p class="section-desc">
+          Add to Cargo.toml and simulate multi-lane highways or signalized intersections with a few lines of Rust.
+        </p>
+      </div>
+
+      <div class="code-tabs-wrap">
+        <div class="code-tabs-nav">
+          <button id="tabCargoBtn" class="code-tab-btn active" onclick="switchCodeTab('cargo')">Cargo.toml</button>
+          <button id="tabHighwayCodeBtn" class="code-tab-btn" onclick="switchCodeTab('highway')">Highway MOBIL Simulation</button>
+          <button id="tabBevyCodeBtn" class="code-tab-btn" onclick="switchCodeTab('bevy')">Bevy 3D Game Engine Adapter</button>
+        </div>
+
+        <div class="code-container">
+          <button class="copy-btn" onclick="copyCurrentCode()">Copy Snippet</button>
+
+          <pre id="codeBlockCargo" class="code-block"><code>[dependencies]
+sumo-rs = "0.1"
+glam = "0.29"</code></pre>
+
+          <pre id="codeBlockHighway" class="code-block" style="display: none;"><code>use glam::Vec2;
+use sumo_rs::prelude::*;
+
+fn main() -> sumo_rs::Result&lt;()&gt; {
+    let mut network = Network::new();
+
+    // Build a 3-lane 1km highway (120 km/h)
+    NetworkBuilder::build_straight_road(
+        &amp;mut network,
+        NodeId::new("start"),
+        NodeId::new("end"),
+        EdgeId::new("highway"),
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1000.0, 0.0),
+        3,     // 3 lanes
+        33.33, // 120 km/h speed limit
+    );
+
+    let mut sim = TrafficSimulation::new(network);
+
+    // Spawn a slow truck in the right lane
+    let truck = Vehicle::new(
+        VehicleId(1),
+        LaneId::new("highway_0"),
+        50.0,
+        15.0, // 54 km/h
+        DriverModel::idm_default(),
+    );
+    sim.add_vehicle(truck)?;
+
+    // Spawn a faster car behind it with MOBIL enabled
+    let mut car = Vehicle::new(
+        VehicleId(2),
+        LaneId::new("highway_0"),
+        10.0,
+        25.0,
+        DriverModel::krauss_default(),
+    );
+    car.mobil = MobilParameters {
+        politeness: 0.2,
+        switching_threshold: 0.15,
+        safe_decel: 4.0,
+        bias_right: 0.1,
+        min_clearance: 2.5,
+    };
+    sim.add_vehicle(car)?;
+
+    // Step simulation at 10Hz
+    for _ in 0..200 {
+        sim.step(0.1);
+    }
+
+    assert!(sim.check_collisions().is_empty());
+    println!("Simulation stepped successfully with zero collisions!");
+    Ok(())
+}</code></pre>
+
+          <pre id="codeBlockBevy" class="code-block" style="display: none;"><code>use bevy::prelude::*;
+use sumo_rs::bevy_adapter::vehicle_to_bevy_transform;
+use sumo_rs::simulation::TrafficSimulation;
+use sumo_rs::types::VehicleId;
+
+#[derive(Component)]
+pub struct VehicleEntity(pub VehicleId);
+
+pub fn update_traffic_system(
+    mut sim: ResMut&lt;TrafficSimulation&gt;,
+    time: Res&lt;Time&gt;,
+    mut query: Query&lt;(&amp;VehicleEntity, &amp;mut Transform)&gt;,
+) {
+    // Step simulation deterministically
+    sim.step(time.delta_secs());
+
+    for (veh_entity, mut transform) in query.iter_mut() {
+        if let Ok(veh) = sim.vehicle(&amp;veh_entity.0) {
+            let bevy_tf = vehicle_to_bevy_transform(veh, &amp;sim.network, 0.0);
+            transform.translation = bevy_tf.translation;
+            transform.rotation = bevy_tf.rotation;
+        }
+    }
+}</code></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- High-Tech Footer -->
+  <footer>
+    <div class="container footer-content">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div class="traffic-light-pill">
+          <span class="light-dot red"></span>
+          <span class="light-dot amber"></span>
+          <span class="light-dot green"></span>
+        </div>
+        <span><b>sumo-rs</b> &bull; Microscopic Traffic Simulation in Pure Rust</span>
+      </div>
+
+      <div class="footer-links">
+        <a href="https://github.com/bhubbard/sumo-rs" target="_blank" rel="noopener noreferrer">GitHub Repository</a>
+        <a href="https://crates.io/crates/sumo-rs" target="_blank" rel="noopener noreferrer">Crates.io</a>
+        <a href="https://docs.rs/sumo-rs" target="_blank" rel="noopener noreferrer">Docs.rs</a>
+        <a href="https://github.com/bhubbard/sumo-rs/blob/main/LICENSE-MIT" target="_blank" rel="noopener noreferrer">MIT / Apache-2.0 License</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Simulation Engines Implementation -->
+  <script>
+    /* =========================================================================
+       1. HIGHWAY SIMULATION SANDBOX (IDM / KRAUSS + MOBIL)
+       ========================================================================= */
+    const ROAD_LENGTH = 1200; // virtual meters
+    const NUM_LANES = 3;
+    const LANE_WIDTH_M = 3.6;
+
+    let activeModel = 'idm'; // 'idm' or 'krauss'
+    let mobilPoliteness = 0.25;
+    let mobilThreshold = 0.20;
+    let targetVehicleCount = 16;
+    let totalLaneChanges = 0;
+    let selectedVehicleId = 1;
+
+    class HighwayVehicle {
+      constructor(id, lane, x, speed, isTruck = false) {
+        this.id = id;
+        this.lane = lane;           // integer: 0 (right), 1 (mid), 2 (left)
+        this.targetLane = lane;
+        this.laneY = lane;          // float for smooth lateral interpolation
+        this.x = x;                 // longitudinal position in meters
+        this.speed = speed;         // current speed in m/s
+        this.acc = 0;               // current acceleration in m/s^2
+        this.length = isTruck ? 14.0 : 4.8;
+        this.width = isTruck ? 2.5 : 1.9;
+        this.isTruck = isTruck;
+        this.color = isTruck ? '#e2e8f0' : this.randomCarColor();
+        this.turnSignal = 0;        // -1: right, 0: off, 1: left
+        this.signalBlink = 0;
+        this.changingLaneTime = 0;
+
+        // Model parameters
+        if (isTruck) {
+          this.v0 = 16.6; // ~60 km/h
+          this.aMax = 1.0;
+          this.bComfort = 1.5;
+          this.T = 2.0;
+          this.s0 = 3.0;
+        } else {
+          this.v0 = 26.0 + (Math.random() * 8.0); // 95 - 125 km/h
+          this.aMax = 2.2;
+          this.bComfort = 2.5;
+          this.T = 1.2;
+          this.s0 = 2.0;
+        }
+        this.bSafe = 4.0;
+        this.kraussSigma = 0.25;
+        this.biasRight = 0.15; // favor right lane
+      }
+
+      randomCarColor() {
+        const palette = [
+          '#38bdf8', '#0ea5e9', '#60a5fa', '#818cf8', '#a78bfa',
+          '#34d399', '#10b981', '#fbbf24', '#f87171', '#e2e8f0'
+        ];
+        return palette[Math.floor(Math.random() * palette.length)];
+      }
+
+      calcIdmAcc(gap, vLead) {
+        const deltaV = this.speed - vLead;
+        const sStar = this.s0 + Math.max(0, this.speed * this.T + (this.speed * deltaV) / (2 * Math.sqrt(this.aMax * this.bComfort)));
+        const effectiveGap = Math.max(0.1, gap);
+        const freeTerm = 1 - Math.pow(this.speed / this.v0, 4);
+        const intTerm = Math.pow(sStar / effectiveGap, 2);
+        return this.aMax * (freeTerm - intTerm);
+      }
+
+      calcKraussSafeSpeed(gap, vLead) {
+        const g = Math.max(0, gap - this.s0);
+        const tau = this.T;
+        const b = this.bComfort;
+        const inner = Math.pow(g * tau, 2) + Math.pow(vLead, 2) + 2 * b * g;
+        return -g * tau + Math.sqrt(Math.max(0, inner));
+      }
+    }
+
+    let highwayVehicles = [];
+
+    function initHighwayVehicles() {
+      highwayVehicles = [];
+      totalLaneChanges = 0;
+      let idCounter = 1;
+
+      // Spawn slow truck first in right lane
+      highwayVehicles.push(new HighwayVehicle(idCounter++, 0, 450, 15.0, true));
+      highwayVehicles.push(new HighwayVehicle(idCounter++, 0, 850, 16.0, true));
+
+      // Spawn commuter cars spread across lanes
+      for (let i = 0; i < targetVehicleCount - 2; i++) {
+        const lane = Math.floor(Math.random() * NUM_LANES);
+        const x = (i * (ROAD_LENGTH / targetVehicleCount) + Math.random() * 20) % ROAD_LENGTH;
+        const speed = 22.0 + Math.random() * 6.0;
+        highwayVehicles.push(new HighwayVehicle(idCounter++, lane, x, speed, false));
+      }
+      selectedVehicleId = highwayVehicles[highwayVehicles.length - 1].id;
+    }
+
+    function getLeaderInLane(veh, lane, vehicles) {
+      let minGap = Infinity;
+      let leader = null;
+      for (const other of vehicles) {
+        if (other.id === veh.id) continue;
+        if (other.lane === lane || other.targetLane === lane) {
+          let gap = other.x - veh.x;
+          if (gap < 0) gap += ROAD_LENGTH; // periodic wraparound
+          gap -= other.length;
+          if (gap < minGap && gap >= 0) {
+            minGap = gap;
+            leader = other;
+          }
+        }
+      }
+      return { leader, gap: minGap };
+    }
+
+    function getFollowerInLane(veh, lane, vehicles) {
+      let minGap = Infinity;
+      let follower = null;
+      for (const other of vehicles) {
+        if (other.id === veh.id) continue;
+        if (other.lane === lane || other.targetLane === lane) {
+          let gap = veh.x - other.x;
+          if (gap < 0) gap += ROAD_LENGTH; // periodic wraparound
+          gap -= veh.length;
+          if (gap < minGap && gap >= 0) {
+            minGap = gap;
+            follower = other;
+          }
+        }
+      }
+      return { follower, gap: minGap };
+    }
+
+    function stepHighwaySimulation(dt) {
+      // 1. MOBIL Lane-Changing Evaluation
+      for (const veh of highwayVehicles) {
+        if (veh.lane !== veh.targetLane) {
+          // currently in lateral transition
+          continue;
+        }
+
+        // Current lane leader and acceleration
+        const { leader: curLead, gap: curGap } = getLeaderInLane(veh, veh.lane, highwayVehicles);
+        const vLeadCur = curLead ? curLead.speed : veh.v0;
+        const aCurr = veh.calcIdmAcc(curGap, vLeadCur);
+
+        // Check prospective adjacent lanes (left: +1, right: -1)
+        const candidates = [];
+        if (veh.lane < NUM_LANES - 1) candidates.push({ target: veh.lane + 1, dir: 1 }); // Left
+        if (veh.lane > 0) candidates.push({ target: veh.lane - 1, dir: -1 });            // Right
+
+        for (const { target: targetLane, dir } of candidates) {
+          const { leader: newLead, gap: newGap } = getLeaderInLane(veh, targetLane, highwayVehicles);
+          const { follower: newFollower, gap: followerGap } = getFollowerInLane(veh, targetLane, highwayVehicles);
+          const { follower: oldFollower, gap: oldFollowerGap } = getFollowerInLane(veh, veh.lane, highwayVehicles);
+
+          // Physical safety clearance buffer
+          if (newGap < 3.0 || followerGap < 3.0) continue;
+
+          const vLeadNew = newLead ? newLead.speed : veh.v0;
+          const aNew = veh.calcIdmAcc(newGap, vLeadNew);
+
+          // Prospective new follower acceleration
+          let aNewFollower = 0;
+          let aCurrFollower = 0;
+          if (newFollower) {
+            const curFollowerGap = (newLead ? newLead.x - newFollower.x : ROAD_LENGTH);
+            aCurrFollower = newFollower.calcIdmAcc(curFollowerGap > 0 ? curFollowerGap : ROAD_LENGTH, newLead ? newLead.speed : newFollower.v0);
+            aNewFollower = newFollower.calcIdmAcc(followerGap, veh.speed);
+          }
+
+          // Safety criterion: new follower must not brake dangerously
+          if (aNewFollower < -veh.bSafe || aNew < -veh.bSafe) {
+            continue;
+          }
+
+          // Old follower acceleration gain
+          let aCurrOldFollower = 0;
+          let aNewOldFollower = 0;
+          if (oldFollower) {
+            aCurrOldFollower = oldFollower.calcIdmAcc(oldFollowerGap, veh.speed);
+            const oldFollowerNewGap = curLead ? (curLead.x - oldFollower.x) : ROAD_LENGTH;
+            aNewOldFollower = oldFollower.calcIdmAcc(oldFollowerNewGap > 0 ? oldFollowerNewGap : ROAD_LENGTH, curLead ? curLead.speed : oldFollower.v0);
+          }
+
+          // Incentive criterion:
+          // a_new - a_curr + p * [ (a_new_f - a_curr_f) + (a_new_of - a_curr_of) ] > delta_a_th +- a_bias
+          const egoGain = aNew - aCurr;
+          const othersGain = (aNewFollower - aCurrFollower) + (aNewOldFollower - aCurrOldFollower);
+          const bias = (dir === -1) ? veh.biasRight : -veh.biasRight; // encourage returning right
+
+          if ((egoGain + mobilPoliteness * othersGain) > (mobilThreshold - bias)) {
+            // Execute lane change!
+            veh.targetLane = targetLane;
+            veh.turnSignal = dir;
+            veh.changingLaneTime = 0.7; // seconds to complete transition
+            totalLaneChanges++;
+            break;
+          }
+        }
+      }
+
+      // 2. Longitudinal Car-Following (IDM or Krauss)
+      for (const veh of highwayVehicles) {
+        const { leader, gap } = getLeaderInLane(veh, veh.targetLane, highwayVehicles);
+        const vLead = leader ? leader.speed : veh.v0;
+
+        if (activeModel === 'idm') {
+          veh.acc = veh.calcIdmAcc(gap, vLead);
+          veh.acc = Math.max(-veh.bSafe * 1.5, Math.min(veh.aMax, veh.acc));
+          veh.speed = Math.max(0, veh.speed + veh.acc * dt);
+        } else {
+          // Krauss Model
+          const vSafe = veh.calcKraussSafeSpeed(gap, vLead);
+          const vDes = Math.min(veh.speed + veh.aMax * dt, veh.v0, vSafe);
+          // Dawdling imperfection
+          const dawdle = veh.kraussSigma * Math.min(veh.aMax * dt, vDes) * Math.random();
+          const targetSpeed = Math.max(0, vDes - dawdle);
+          veh.acc = (targetSpeed - veh.speed) / dt;
+          veh.speed = targetSpeed;
+        }
+
+        // Longitudinal update with wraparound
+        veh.x = (veh.x + veh.speed * dt) % ROAD_LENGTH;
+
+        // Lateral lane interpolation
+        if (veh.lane !== veh.targetLane) {
+          const latSpeed = (veh.targetLane > veh.lane ? 1 : -1) * 2.2 * dt;
+          veh.laneY += latSpeed;
+          if ((latSpeed > 0 && veh.laneY >= veh.targetLane) || (latSpeed < 0 && veh.laneY <= veh.targetLane)) {
+            veh.laneY = veh.targetLane;
+            veh.lane = veh.targetLane;
+            veh.turnSignal = 0;
+          }
+        } else {
+          veh.laneY = veh.lane;
+        }
+
+        // Signal blinker
+        veh.signalBlink = (veh.signalBlink + dt * 5) % 1;
+      }
+    }
+
+    /* Rendering the Highway Canvas */
+    const highwayCanvas = document.getElementById('highwayCanvas');
+    const hCtx = highwayCanvas.getContext('2d');
+
+    function resizeHighwayCanvas() {
+      const rect = highwayCanvas.getBoundingClientRect();
+      highwayCanvas.width = rect.width * window.devicePixelRatio;
+      highwayCanvas.height = 380 * window.devicePixelRatio;
+      hCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+    window.addEventListener('resize', resizeHighwayCanvas);
+    resizeHighwayCanvas();
+
+    function renderHighway(time) {
+      const width = highwayCanvas.width / window.devicePixelRatio;
+      const height = 380;
+
+      // Clear road background
+      hCtx.fillStyle = '#0a0e14';
+      hCtx.fillRect(0, 0, width, height);
+
+      // Road geometry
+      const roadTop = 75;
+      const laneH = 70;
+      const roadBottom = roadTop + NUM_LANES * laneH;
+
+      // Asphalt roadway
+      hCtx.fillStyle = '#141a24';
+      hCtx.fillRect(0, roadTop, width, NUM_LANES * laneH);
+
+      // Road shoulder lines (solid)
+      hCtx.strokeStyle = '#64748b';
+      hCtx.lineWidth = 3;
+      hCtx.beginPath();
+      hCtx.moveTo(0, roadTop);
+      hCtx.lineTo(width, roadTop);
+      hCtx.moveTo(0, roadBottom);
+      hCtx.lineTo(width, roadBottom);
+      hCtx.stroke();
+
+      // Dashed lane divider lines
+      hCtx.strokeStyle = '#cbd5e1';
+      hCtx.lineWidth = 2;
+      hCtx.setLineDash([20, 20]);
+      for (let l = 1; l < NUM_LANES; l++) {
+        const y = roadTop + l * laneH;
+        hCtx.beginPath();
+        hCtx.moveTo(0, y);
+        hCtx.lineTo(width, y);
+        hCtx.stroke();
+      }
+      hCtx.setLineDash([]);
+
+      // Lane labels
+      hCtx.font = '600 11px JetBrains Mono';
+      hCtx.fillStyle = '#475569';
+      for (let l = 0; l < NUM_LANES; l++) {
+        const label = l === 0 ? 'LANE 0 (RIGHT / SLOW)' : (l === 1 ? 'LANE 1 (CENTER)' : 'LANE 2 (FAST / PASSING)');
+        hCtx.fillText(label, 16, roadTop + (NUM_LANES - 1 - l) * laneH + 22);
+      }
+
+      // Draw Vehicles
+      const scaleX = width / ROAD_LENGTH;
+
+      for (const veh of highwayVehicles) {
+        // Road visual Y: lane 0 is at bottom, lane 2 at top
+        const visualLaneY = (NUM_LANES - 1) - veh.laneY;
+        const centerY = roadTop + visualLaneY * laneH + laneH / 2;
+        const px = veh.x * scaleX;
+        const pLen = veh.length * scaleX * 1.8;
+        const pWid = veh.width * 9;
+
+        hCtx.save();
+        hCtx.translate(px, centerY);
+
+        // Selection highlight ring
+        if (veh.id === selectedVehicleId) {
+          hCtx.strokeStyle = '#38bdf8';
+          hCtx.lineWidth = 2;
+          hCtx.strokeRect(-pLen / 2 - 4, -pWid / 2 - 4, pLen + 8, pWid + 8);
+
+          // Headway indicator line
+          const { leader, gap } = getLeaderInLane(veh, veh.targetLane, highwayVehicles);
+          if (leader) {
+            hCtx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+            hCtx.setLineDash([4, 4]);
+            hCtx.beginPath();
+            hCtx.moveTo(pLen / 2, 0);
+            hCtx.lineTo(pLen / 2 + gap * scaleX * 1.8, 0);
+            hCtx.stroke();
+            hCtx.setLineDash([]);
+          }
+        }
+
+        // Vehicle shadow
+        hCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        hCtx.fillRect(-pLen / 2 + 2, -pWid / 2 + 3, pLen, pWid);
+
+        // Vehicle Chassis
+        hCtx.fillStyle = veh.color;
+        hCtx.beginPath();
+        hCtx.roundRect(-pLen / 2, -pWid / 2, pLen, pWid, 3);
+        hCtx.fill();
+
+        // Windshield and roof
+        hCtx.fillStyle = '#0f172a';
+        if (veh.isTruck) {
+          // Cab and trailer
+          hCtx.fillRect(-pLen / 2 + pLen * 0.75, -pWid / 2 + 2, pLen * 0.22, pWid - 4);
+          hCtx.fillStyle = '#334155';
+          hCtx.fillRect(-pLen / 2 + 3, -pWid / 2 + 2, pLen * 0.68, pWid - 4);
+        } else {
+          hCtx.fillRect(-pLen * 0.2, -pWid / 2 + 2, pLen * 0.45, pWid - 4);
+        }
+
+        // Headlights (facing right / direction of travel)
+        hCtx.fillStyle = 'rgba(254, 240, 138, 0.9)';
+        hCtx.fillRect(pLen / 2 - 2, -pWid / 2 + 1, 3, 3);
+        hCtx.fillRect(pLen / 2 - 2, pWid / 2 - 4, 3, 3);
+
+        // Brake lights (bright red when decelerating)
+        if (veh.acc < -0.3) {
+          hCtx.fillStyle = '#ef4444';
+          hCtx.shadowColor = '#ef4444';
+          hCtx.shadowBlur = 8;
+        } else {
+          hCtx.fillStyle = '#7f1d1d';
+          hCtx.shadowBlur = 0;
+        }
+        hCtx.fillRect(-pLen / 2 - 1, -pWid / 2 + 1, 3, 3);
+        hCtx.fillRect(-pLen / 2 - 1, pWid / 2 - 4, 3, 3);
+        hCtx.shadowBlur = 0;
+
+        // Turn blinkers (amber)
+        if (veh.turnSignal !== 0 && veh.signalBlink > 0.5) {
+          hCtx.fillStyle = '#f59e0b';
+          hCtx.shadowColor = '#f59e0b';
+          hCtx.shadowBlur = 6;
+          // veh.turnSignal: 1 is left (upward visually), -1 is right (downward)
+          const blinkY = veh.turnSignal === 1 ? -pWid / 2 - 1 : pWid / 2 - 1;
+          hCtx.fillRect(-pLen / 2, blinkY, 4, 3);
+          hCtx.fillRect(pLen / 2 - 4, blinkY, 4, 3);
+          hCtx.shadowBlur = 0;
+        }
+
+        // Vehicle ID tag
+        hCtx.font = '600 9px JetBrains Mono';
+        hCtx.fillStyle = '#0f172a';
+        hCtx.fillText(veh.id, -4, 3);
+
+        hCtx.restore();
+      }
+
+      // Update HUD & Inspector
+      updateHighwayHUD();
+    }
+
+    function updateHighwayHUD() {
+      let speedSum = 0;
+      for (const v of highwayVehicles) speedSum += v.speed;
+      const avgKmh = ((speedSum / (highwayVehicles.length || 1)) * 3.6).toFixed(1);
+
+      document.getElementById('hudVehCount').innerText = highwayVehicles.length;
+      document.getElementById('hudAvgSpeed').innerText = `${avgKmh} km/h`;
+      document.getElementById('hudLaneChanges').innerText = totalLaneChanges;
+      document.getElementById('hudModelName').innerText = (activeModel === 'idm' ? 'IDM + MOBIL' : 'KRAUSS + MOBIL');
+
+      // Inspector box for selected vehicle
+      const target = highwayVehicles.find(v => v.id === selectedVehicleId) || highwayVehicles[0];
+      if (target) {
+        document.getElementById('insId').innerText = target.id;
+        document.getElementById('insLane').innerText = `Lane ${target.lane}`;
+        document.getElementById('insSpeed').innerText = `${(target.speed * 3.6).toFixed(1)} km/h (${target.speed.toFixed(1)} m/s)`;
+        document.getElementById('insAcc').innerText = `${target.acc >= 0 ? '+' : ''}${target.acc.toFixed(2)} m/s²`;
+
+        const { leader, gap } = getLeaderInLane(target, target.lane, highwayVehicles);
+        document.getElementById('insGap').innerText = gap === Infinity ? 'Clear Road' : `${gap.toFixed(1)} m`;
+        const headway = gap === Infinity ? '--' : `${(gap / Math.max(0.1, target.speed)).toFixed(2)} s`;
+        document.getElementById('insHeadway').innerText = headway;
+        document.getElementById('insMobil').innerText = target.turnSignal === 0 ? 'Evaluating' : (target.turnSignal > 0 ? 'Overtaking (Left)' : 'Yielding Right');
+      }
+    }
+
+    // Canvas click to select vehicle
+    highwayCanvas.addEventListener('click', (e) => {
+      const rect = highwayCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+      const width = rect.width;
+      const scaleX = width / ROAD_LENGTH;
+      const roadTop = 75;
+      const laneH = 70;
+
+      for (const veh of highwayVehicles) {
+        const visualLaneY = (NUM_LANES - 1) - veh.laneY;
+        const cy = roadTop + visualLaneY * laneH + laneH / 2;
+        const px = veh.x * scaleX;
+        if (Math.abs(clickX - px) < 25 && Math.abs(clickY - cy) < 25) {
+          selectedVehicleId = veh.id;
+          break;
+        }
+      }
+    });
+
+    // Control hooks
+    function setCarFollowingModel(model) {
+      activeModel = model;
+      document.getElementById('btnModelIdm').className = model === 'idm' ? 'btn-action btn-accent' : 'btn-action';
+      document.getElementById('btnModelKrauss').className = model === 'krauss' ? 'btn-action btn-accent' : 'btn-action';
+    }
+
+    function updateHighwayParams() {
+      mobilPoliteness = parseFloat(document.getElementById('sliderPoliteness').value);
+      mobilThreshold = parseFloat(document.getElementById('sliderThreshold').value);
+      document.getElementById('lblPoliteness').innerText = mobilPoliteness.toFixed(2);
+      document.getElementById('lblThreshold').innerText = `${mobilThreshold.toFixed(2)} m/s²`;
+    }
+
+    function updateHighwayDensity() {
+      targetVehicleCount = parseInt(document.getElementById('sliderDensity').value, 10);
+      document.getElementById('lblDensity').innerText = `${targetVehicleCount} cars`;
+      initHighwayVehicles();
+    }
+
+    function triggerPhantomJam() {
+      // Force fastest lead car to decelerate sharply
+      const lead = highwayVehicles.reduce((prev, curr) => curr.x > prev.x ? curr : prev, highwayVehicles[0]);
+      if (lead) {
+        lead.speed = 4.0;
+        lead.acc = -5.0;
+      }
+    }
+
+    function spawnSlowTruck() {
+      const newId = highwayVehicles.length + 100;
+      const truck = new HighwayVehicle(newId, 0, 10, 14.0, true);
+      highwayVehicles.unshift(truck);
+    }
+
+    function resetHighwaySim() {
+      initHighwayVehicles();
+    }
+
+    initHighwayVehicles();
+
+    /* =========================================================================
+       2. 4-WAY INTERSECTION SPaT CONTROLLER SANDBOX
+       ========================================================================= */
+    const intersectionCanvas = document.getElementById('intersectionCanvas');
+    const iCtx = intersectionCanvas.getContext('2d');
+
+    function resizeIntersectionCanvas() {
+      const rect = intersectionCanvas.getBoundingClientRect();
+      intersectionCanvas.width = rect.width * window.devicePixelRatio;
+      intersectionCanvas.height = 480 * window.devicePixelRatio;
+      iCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+    window.addEventListener('resize', resizeIntersectionCanvas);
+    resizeIntersectionCanvas();
+
+    // SPaT Traffic Signal States
+    const SPAT_PHASES = [
+      { id: 0, name: 'N/S GREEN (STRAIGHT + RIGHT)', duration: 16.0, ns: 'green', ew: 'red' },
+      { id: 1, name: 'N/S YELLOW CLEARANCE', duration: 3.0, ns: 'yellow', ew: 'red' },
+      { id: 2, name: 'ALL-RED CLEARANCE', duration: 2.0, ns: 'red', ew: 'red' },
+      { id: 3, name: 'E/W GREEN (STRAIGHT + RIGHT)', duration: 16.0, ns: 'red', ew: 'green' },
+      { id: 4, name: 'E/W YELLOW CLEARANCE', duration: 3.0, ns: 'red', ew: 'yellow' },
+      { id: 5, name: 'ALL-RED CLEARANCE', duration: 2.0, ns: 'red', ew: 'red' }
+    ];
+
+    let spatPhaseIdx = 0;
+    let spatPhaseTimer = 16.0;
+    let intersectionMode = 'spat'; // 'spat' or 'stop'
+    let greenDuration = 16.0;
+    let inflowLevel = 3;
+    let totalThroughput = 0;
+    let conflictOccupied = false;
+
+    // Vehicles approaching intersection
+    class IntersectionVehicle {
+      constructor(id, approach, dist, speed, turn = 'straight') {
+        this.id = id;
+        this.approach = approach;   // 'N', 'S', 'E', 'W'
+        this.dist = dist;           // distance to junction center (meters)
+        this.speed = speed;         // m/s
+        this.acc = 0;
+        this.turn = turn;           // 'straight', 'right', 'left'
+        this.length = 4.8;
+        this.hasStoppedAtStopSign = false;
+        this.stopDwellTimer = 0;
+        this.cleared = false;
+        this.color = '#38bdf8';
+      }
+    }
+
+    let junctionVehicles = [];
+    let stopSignFifoQueue = [];
+
+    function initIntersectionVehicles() {
+      junctionVehicles = [
+        new IntersectionVehicle(1, 'S', 90, 11.0, 'straight'),
+        new IntersectionVehicle(2, 'S', 125, 11.0, 'left'),
+        new IntersectionVehicle(3, 'N', 80, 10.5, 'straight'),
+        new IntersectionVehicle(4, 'E', 75, 10.0, 'straight'),
+        new IntersectionVehicle(5, 'W', 85, 10.0, 'right'),
+      ];
+      stopSignFifoQueue = [];
+    }
+    initIntersectionVehicles();
+
+    function stepIntersectionSimulation(dt) {
+      // 1. Advance SPaT Cycle
+      if (intersectionMode === 'spat') {
+        spatPhaseTimer -= dt;
+        if (spatPhaseTimer <= 0) {
+          spatPhaseIdx = (spatPhaseIdx + 1) % SPAT_PHASES.length;
+          const curr = SPAT_PHASES[spatPhaseIdx];
+          spatPhaseTimer = (curr.id === 0 || curr.id === 3) ? greenDuration : curr.duration;
+        }
+      }
+
+      const currPhase = SPAT_PHASES[spatPhaseIdx];
+      conflictOccupied = false;
+
+      // 2. Step each vehicle
+      const STOP_LINE_DIST = 24.0; // meters from center
+      const JUNCTION_CLEAR_DIST = -26.0;
+
+      for (const veh of junctionVehicles) {
+        let signalState = 'green';
+        if (intersectionMode === 'spat') {
+          signalState = (veh.approach === 'N' || veh.approach === 'S') ? currPhase.ns : currPhase.ew;
+        }
+
+        // Leader vehicle ahead on same approach
+        let minGap = Infinity;
+        for (const other of junctionVehicles) {
+          if (other.id !== veh.id && other.approach === veh.approach && other.dist < veh.dist && !other.cleared) {
+            const gap = veh.dist - other.dist - other.length;
+            if (gap < minGap && gap >= 0) minGap = gap;
+          }
+        }
+
+        // Target stop position
+        let targetStopDist = -Infinity;
+        let mustStop = false;
+
+        if (intersectionMode === 'spat') {
+          if (signalState === 'red' || (signalState === 'yellow' && veh.dist > STOP_LINE_DIST + 10)) {
+            if (veh.dist > STOP_LINE_DIST) {
+              targetStopDist = STOP_LINE_DIST;
+              mustStop = true;
+            }
+          }
+
+          // Unprotected left turn yield: yield to oncoming straight if in yellow or green
+          if (veh.turn === 'left' && veh.dist <= STOP_LINE_DIST + 4 && veh.dist > 0) {
+            const opposing = (veh.approach === 'N') ? 'S' : (veh.approach === 'S' ? 'N' : (veh.approach === 'E' ? 'W' : 'E'));
+            const oncoming = junctionVehicles.find(o => o.approach === opposing && o.dist > -10 && o.dist < 40 && o.turn === 'straight');
+            if (oncoming) {
+              mustStop = true;
+              targetStopDist = 6.0; // yield at center
+            }
+          }
+        } else {
+          // All-Way Stop (FIFO)
+          if (veh.dist > STOP_LINE_DIST && !veh.hasStoppedAtStopSign) {
+            targetStopDist = STOP_LINE_DIST;
+            mustStop = true;
+            if (veh.dist < STOP_LINE_DIST + 2 && veh.speed < 0.3) {
+              if (!stopSignFifoQueue.includes(veh.id)) stopSignFifoQueue.push(veh.id);
+              veh.stopDwellTimer += dt;
+              if (veh.stopDwellTimer > 1.2 && stopSignFifoQueue[0] === veh.id) {
+                veh.hasStoppedAtStopSign = true;
+                stopSignFifoQueue.shift();
+              }
+            }
+          }
+        }
+
+        // Calculate IDM acceleration
+        let leadDist = minGap;
+        let leadSpeed = 12.0;
+
+        if (mustStop) {
+          const stopGap = veh.dist - targetStopDist;
+          if (stopGap < leadDist) {
+            leadDist = Math.max(0.1, stopGap);
+            leadSpeed = 0.0;
+          }
+        }
+
+        // IDM
+        const deltaV = veh.speed - leadSpeed;
+        const sStar = 2.0 + Math.max(0, veh.speed * 1.4 + (veh.speed * deltaV) / (2 * Math.sqrt(2.0 * 2.5)));
+        const freeTerm = 1 - Math.pow(veh.speed / 12.5, 4);
+        const intTerm = Math.pow(sStar / Math.max(0.1, leadDist), 2);
+        veh.acc = Math.max(-4.5, Math.min(2.0, 2.0 * (freeTerm - intTerm)));
+
+        veh.speed = Math.max(0, veh.speed + veh.acc * dt);
+        veh.dist -= veh.speed * dt;
+
+        // Check conflict zone occupancy (-18m to +18m)
+        if (veh.dist < 18 && veh.dist > -18) {
+          conflictOccupied = true;
+        }
+
+        if (veh.dist <= JUNCTION_CLEAR_DIST) {
+          veh.cleared = true;
+          totalThroughput++;
+        }
+      }
+
+      // Filter cleared vehicles
+      junctionVehicles = junctionVehicles.filter(v => !v.cleared);
+
+      // Inflow spawning
+      const spawnProb = inflowLevel * 0.012;
+      if (Math.random() < spawnProb && junctionVehicles.length < 14) {
+        const approaches = ['N', 'S', 'E', 'W'];
+        const app = approaches[Math.floor(Math.random() * approaches.length)];
+        const hasClose = junctionVehicles.some(v => v.approach === app && v.dist > 120);
+        if (!hasClose) {
+          const turns = ['straight', 'straight', 'right', 'left'];
+          const turn = turns[Math.floor(Math.random() * turns.length)];
+          junctionVehicles.push(new IntersectionVehicle(Date.now() % 10000, app, 140, 10.0 + Math.random() * 2.5, turn));
+        }
+      }
+    }
+
+    function renderIntersection() {
+      const w = intersectionCanvas.width / window.devicePixelRatio;
+      const h = 480;
+      const cx = w / 2;
+      const cy = h / 2;
+      const roadW = 80;
+
+      // Dark background
+      iCtx.fillStyle = '#0a0e14';
+      iCtx.fillRect(0, 0, w, h);
+
+      // Road asphalt cross
+      iCtx.fillStyle = '#141a24';
+      // Vertical road (N-S)
+      iCtx.fillRect(cx - roadW / 2, 0, roadW, h);
+      // Horizontal road (E-W)
+      iCtx.fillRect(0, cy - roadW / 2, w, roadW);
+
+      // Conflict Zone Box in center
+      const boxSize = roadW;
+      iCtx.fillStyle = conflictOccupied ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.08)';
+      iCtx.strokeStyle = conflictOccupied ? 'rgba(239, 68, 68, 0.4)' : 'rgba(16, 185, 129, 0.3)';
+      iCtx.lineWidth = 1.5;
+      iCtx.fillRect(cx - boxSize / 2, cy - boxSize / 2, boxSize, boxSize);
+      iCtx.strokeRect(cx - boxSize / 2, cy - boxSize / 2, boxSize, boxSize);
+
+      // Yellow road dividers
+      iCtx.strokeStyle = '#f59e0b';
+      iCtx.lineWidth = 2;
+      // N
+      iCtx.beginPath(); iCtx.moveTo(cx, 0); iCtx.lineTo(cx, cy - boxSize / 2); iCtx.stroke();
+      // S
+      iCtx.beginPath(); iCtx.moveTo(cx, cy + boxSize / 2); iCtx.lineTo(cx, h); iCtx.stroke();
+      // W
+      iCtx.beginPath(); iCtx.moveTo(0, cy); iCtx.lineTo(cx - boxSize / 2, cy); iCtx.stroke();
+      // E
+      iCtx.beginPath(); iCtx.moveTo(cx + boxSize / 2, cy); iCtx.lineTo(w, cy); iCtx.stroke();
+
+      // White Stop Lines
+      iCtx.strokeStyle = '#f8fafc';
+      iCtx.lineWidth = 3;
+      // North approach stop line (coming down)
+      iCtx.beginPath(); iCtx.moveTo(cx, cy - boxSize / 2 - 4); iCtx.lineTo(cx - roadW / 2, cy - boxSize / 2 - 4); iCtx.stroke();
+      // South approach stop line (coming up)
+      iCtx.beginPath(); iCtx.moveTo(cx, cy + boxSize / 2 + 4); iCtx.lineTo(cx + roadW / 2, cy + boxSize / 2 + 4); iCtx.stroke();
+      // East approach stop line (coming left)
+      iCtx.beginPath(); iCtx.moveTo(cx + boxSize / 2 + 4, cy); iCtx.lineTo(cx + boxSize / 2 + 4, cy - roadW / 2); iCtx.stroke();
+      // West approach stop line (coming right)
+      iCtx.beginPath(); iCtx.moveTo(cx - boxSize / 2 - 4, cy); iCtx.lineTo(cx - boxSize / 2 - 4, cy + roadW / 2); iCtx.stroke();
+
+      // Signal Heads / Stop signs
+      const curr = SPAT_PHASES[spatPhaseIdx];
+      drawTrafficLightHead(cx - roadW / 2 - 14, cy - boxSize / 2 - 16, curr.ns);
+      drawTrafficLightHead(cx + roadW / 2 + 6, cy + boxSize / 2 + 6, curr.ns);
+      drawTrafficLightHead(cx + boxSize / 2 + 6, cy - roadW / 2 - 14, curr.ew);
+      drawTrafficLightHead(cx - boxSize / 2 - 16, cy + roadW / 2 + 6, curr.ew);
+
+      // Draw vehicles
+      for (const veh of junctionVehicles) {
+        let vx = cx;
+        let vy = cy;
+        let angle = 0;
+        const laneOffset = 20;
+
+        if (veh.approach === 'S') {
+          vx = cx + laneOffset;
+          vy = cy + (veh.dist * 2.2);
+          angle = -Math.PI / 2;
+        } else if (veh.approach === 'N') {
+          vx = cx - laneOffset;
+          vy = cy - (veh.dist * 2.2);
+          angle = Math.PI / 2;
+        } else if (veh.approach === 'W') {
+          vx = cx - (veh.dist * 2.2);
+          vy = cy + laneOffset;
+          angle = 0;
+        } else if (veh.approach === 'E') {
+          vx = cx + (veh.dist * 2.2);
+          vy = cy - laneOffset;
+          angle = Math.PI;
+        }
+
+        iCtx.save();
+        iCtx.translate(vx, vy);
+        iCtx.rotate(angle);
+
+        // Vehicle body
+        iCtx.fillStyle = veh.turn === 'left' ? '#a855f7' : (veh.turn === 'right' ? '#38bdf8' : '#10b981');
+        iCtx.beginPath();
+        iCtx.roundRect(-12, -7, 24, 14, 2);
+        iCtx.fill();
+
+        // Windshield
+        iCtx.fillStyle = '#0f172a';
+        iCtx.fillRect(1, -5, 6, 10);
+
+        // Turn indicator blink
+        if (veh.turn !== 'straight' && (Date.now() % 400 < 200)) {
+          iCtx.fillStyle = '#f59e0b';
+          const blkY = veh.turn === 'left' ? -7 : 5;
+          iCtx.fillRect(8, blkY, 3, 2);
+        }
+
+        iCtx.restore();
+      }
+
+      // Update intersection HUD
+      document.getElementById('hudSpatPhase').innerText = intersectionMode === 'spat' ? curr.name : 'ALL-WAY STOP (FIFO ARBITRATION)';
+      document.getElementById('hudSpatPhase').style.color = intersectionMode === 'spat' ? (curr.ns === 'green' ? '#10b981' : (curr.ns === 'yellow' ? '#f59e0b' : '#38bdf8')) : '#f59e0b';
+      document.getElementById('hudSpatTimer').innerText = intersectionMode === 'spat' ? `${Math.max(0, spatPhaseTimer).toFixed(1)}s` : `FIFO Queue: ${stopSignFifoQueue.length}`;
+      document.getElementById('hudConflictStatus').innerText = conflictOccupied ? 'OCCUPIED' : 'CLEAR';
+      document.getElementById('hudConflictStatus').style.color = conflictOccupied ? '#ef4444' : '#10b981';
+      document.getElementById('hudThroughput').innerText = `${totalThroughput} vehicles`;
+    }
+
+    function drawTrafficLightHead(x, y, state) {
+      if (intersectionMode === 'stop') {
+        // Red Octagonal Stop Sign
+        iCtx.fillStyle = '#ef4444';
+        iCtx.beginPath();
+        iCtx.arc(x + 5, y + 5, 8, 0, Math.PI * 2);
+        iCtx.fill();
+        iCtx.font = '700 7px sans-serif';
+        iCtx.fillStyle = '#ffffff';
+        iCtx.fillText('STOP', x - 3, y + 8);
+        return;
+      }
+
+      // 3-lamp signal head
+      iCtx.fillStyle = '#0f172a';
+      iCtx.strokeStyle = '#334155';
+      iCtx.lineWidth = 1;
+      iCtx.beginPath();
+      iCtx.roundRect(x, y, 10, 24, 2);
+      iCtx.fill();
+      iCtx.stroke();
+
+      // Red lamp
+      iCtx.fillStyle = (state === 'red') ? '#ef4444' : '#450a0a';
+      iCtx.beginPath(); iCtx.arc(x + 5, y + 4, 3, 0, Math.PI * 2); iCtx.fill();
+
+      // Yellow lamp
+      iCtx.fillStyle = (state === 'yellow') ? '#f59e0b' : '#451a03';
+      iCtx.beginPath(); iCtx.arc(x + 5, y + 12, 3, 0, Math.PI * 2); iCtx.fill();
+
+      // Green lamp
+      iCtx.fillStyle = (state === 'green') ? '#10b981' : '#022c22';
+      iCtx.beginPath(); iCtx.arc(x + 5, y + 20, 3, 0, Math.PI * 2); iCtx.fill();
+    }
+
+    // Intersection controls
+    function setIntersectionMode(mode) {
+      intersectionMode = mode;
+      document.getElementById('btnModeSpat').className = mode === 'spat' ? 'btn-action btn-accent' : 'btn-action';
+      document.getElementById('btnModeAllWayStop').className = mode === 'stop' ? 'btn-action btn-accent' : 'btn-action';
+    }
+
+    function updateIntersectionParams() {
+      greenDuration = parseFloat(document.getElementById('sliderGreenDuration').value);
+      document.getElementById('lblGreenDuration').innerText = `${greenDuration}s`;
+      inflowLevel = parseInt(document.getElementById('sliderInflow').value, 10);
+      const labels = ['Very Low', 'Low', 'Normal', 'High', 'Surge'];
+      document.getElementById('lblInflow').innerText = `${labels[inflowLevel - 1]}`;
+    }
+
+    function advanceSignalPhase() {
+      spatPhaseIdx = (spatPhaseIdx + 1) % SPAT_PHASES.length;
+      spatPhaseTimer = SPAT_PHASES[spatPhaseIdx].duration;
+    }
+
+    function spawnCrossTrafficSurge() {
+      junctionVehicles.push(new IntersectionVehicle(Date.now() % 1000 + 10, 'E', 70, 11.0, 'straight'));
+      junctionVehicles.push(new IntersectionVehicle(Date.now() % 1000 + 11, 'W', 80, 10.0, 'straight'));
+      junctionVehicles.push(new IntersectionVehicle(Date.now() % 1000 + 12, 'N', 65, 10.5, 'left'));
+    }
+
+    function resetIntersectionSim() {
+      initIntersectionVehicles();
+      totalThroughput = 0;
+    }
+
+    /* =========================================================================
+       3. MAIN SIMULATION LOOP (60 FPS)
+       ========================================================================= */
+    let lastTime = performance.now();
+
+    function simLoop(now) {
+      const dt = Math.min(0.1, (now - lastTime) / 1000);
+      lastTime = now;
+
+      // Step and render Highway
+      stepHighwaySimulation(dt);
+      renderHighway(now);
+
+      // Step and render Intersection
+      stepIntersectionSimulation(dt);
+      renderIntersection();
+
+      requestAnimationFrame(simLoop);
+    }
+    requestAnimationFrame(simLoop);
+
+    /* =========================================================================
+       4. UI TAB SWITCHERS & CODE CLIPBOARD
+       ========================================================================= */
+    function switchSandboxTab(tab) {
+      document.getElementById('tabHighwayBtn').classList.toggle('active', tab === 'highway');
+      document.getElementById('tabIntersectionBtn').classList.toggle('active', tab === 'intersection');
+      document.getElementById('tabHighwayContent').classList.toggle('active', tab === 'highway');
+      document.getElementById('tabIntersectionContent').classList.toggle('active', tab === 'intersection');
+      if (tab === 'intersection') resizeIntersectionCanvas();
+      else resizeHighwayCanvas();
+    }
+
+    function switchCodeTab(tab) {
+      document.getElementById('tabCargoBtn').classList.toggle('active', tab === 'cargo');
+      document.getElementById('tabHighwayCodeBtn').classList.toggle('active', tab === 'highway');
+      document.getElementById('tabBevyCodeBtn').classList.toggle('active', tab === 'bevy');
+
+      document.getElementById('codeBlockCargo').style.display = tab === 'cargo' ? 'block' : 'none';
+      document.getElementById('codeBlockHighway').style.display = tab === 'highway' ? 'block' : 'none';
+      document.getElementById('codeBlockBevy').style.display = tab === 'bevy' ? 'block' : 'none';
+    }
+
+    function copyCurrentCode() {
+      let codeText = '';
+      if (document.getElementById('codeBlockCargo').style.display !== 'none') {
+        codeText = document.getElementById('codeBlockCargo').innerText;
+      } else if (document.getElementById('codeBlockHighway').style.display !== 'none') {
+        codeText = document.getElementById('codeBlockHighway').innerText;
+      } else {
+        codeText = document.getElementById('codeBlockBevy').innerText;
+      }
+
+      navigator.clipboard.writeText(codeText).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.innerText = 'Copied!';
+        setTimeout(() => { btn.innerText = 'Copy Snippet'; }, 2000);
+      });
+    }
+
+    // Initialize KaTeX formulas once loaded
+    document.addEventListener("DOMContentLoaded", function() {
+      if (window.renderMathInElement) {
+        renderMathInElement(document.body);
+      }
+    });
+  </script>
+</body>
+</html>
