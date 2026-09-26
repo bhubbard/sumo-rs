@@ -1,0 +1,22 @@
+[package]
+name = "sumo-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["Brandon Hubbard <bhubbard@users.noreply.github.com>"]
+description = "Pure Rust microscopic traffic simulation engine featuring IDM, Krauss car-following, MOBIL lane changing, and intersection right-of-way from SUMO"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bhubbard/sumo-rs"
+readme = "README.md"
+keywords = ["traffic-simulation", "sumo", "autonomous-driving", "idm", "bevy"]
+categories = ["simulation", "game-development", "science"]
+
+[dependencies]
+glam = { version = "0.29", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+rand = "0.8"
+rand_chacha = "0.3"
+serde_json = "1.0"
+
+[dev-dependencies]
+approx = "0.5"
